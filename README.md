@@ -147,4 +147,3 @@ docker run --rm \
 - [Selling Partner API documentation](https://developer-docs.amazon.com/sp-api)
 - [Product Advertising API documentation](https://webservices.amazon.com/paapi5/documentation/)
 - [python-sp-api GitHub](https://github.com/saleweaver/python-amazon-sp-api)
-
