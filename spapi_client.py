@@ -13,7 +13,7 @@ from tenacity import RetryError, retry, retry_if_exception_type, stop_after_atte
 from models import CatalogItemSummary, PricingInfo
 
 try:
-    from sp_api.api import CatalogItems, ProductPricing
+    from spapi_compat import CatalogItems, ProductPricing
     from sp_api.base import Marketplaces, SellingApiException
 except ImportError as exc:  # pragma: no cover - optional dependency
     CatalogItems = None  # type: ignore

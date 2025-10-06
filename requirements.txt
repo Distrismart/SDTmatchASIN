@@ -1,4 +1,4 @@
-python-sp-api==0.21.0
+python-amazon-sp-api==1.9.49
 pandas==2.1.4
 tenacity==8.2.3
 loguru==0.7.2
