@@ -5,10 +5,12 @@ import csv
 import logging
 import sys
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from contextlib import contextmanager
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
 
 from tqdm import tqdm
 
@@ -64,6 +66,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--skip-price",
         action="store_true",
         help="Skip fetching featured offer pricing",
+    )
+    parser.add_argument(
+        "--throttle-seconds",
+        type=float,
+        default=0.5,
+        help="Minimum delay between Amazon API requests to reduce throttling",
     )
     return parser.parse_args(argv)
 
@@ -131,6 +139,26 @@ def make_lookup_result(
     return LookupResult(ean=ean, marketplace=marketplace, item=item, pricing=pricing)
 
 
+class RateLimiter:
+    """Simple thread-safe rate limiter enforcing a minimum delay between calls."""
+
+    def __init__(self, min_interval_seconds: float) -> None:
+        self._min_interval = max(0.0, float(min_interval_seconds))
+        self._lock = threading.Lock()
+        self._last_call = 0.0
+
+    def wait(self) -> None:
+        if self._min_interval <= 0:
+            return
+        with self._lock:
+            now = time.monotonic()
+            delta = now - self._last_call
+            if delta < self._min_interval:
+                time.sleep(self._min_interval - delta)
+                now = time.monotonic()
+            self._last_call = now
+
+
 def process_marketplace(
     ean: str,
     marketplace: str,
@@ -139,9 +167,12 @@ def process_marketplace(
     skip_price: bool,
     seen: Dict[Tuple[str, str], Set[str]],
     seen_lock: threading.Lock,
+    rate_limiter: Optional[RateLimiter] = None,
 ) -> List[LookupResult]:
     results: List[LookupResult] = []
     try:
+        if rate_limiter:
+            rate_limiter.wait()
         items = client.lookup_ean(ean, marketplace)
     except Exception as exc:  # pragma: no cover - network safeguard
         logger.error("Lookup failed for %s on %s: %s", ean, marketplace, exc)
@@ -165,6 +196,8 @@ def process_marketplace(
         pricing = None
         if not skip_price:
             try:
+                if rate_limiter:
+                    rate_limiter.wait()
                 pricing = client.get_featured_offer_price(asin, marketplace)
             except Exception as exc:  # pragma: no cover - network safeguard
                 logger.warning("Failed to fetch pricing for %s on %s: %s", asin, marketplace, exc)
@@ -232,92 +265,161 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     setup_logging(args.log_level)
 
-    input_path = Path(args.input)
-    output_path = Path(args.output)
+    try:
+        with _tqdm_progress_callback() as progress_cb:
+            run_matcher(
+                input_path=Path(args.input),
+                output_path=Path(args.output),
+                marketplaces=normalize_marketplaces(args.marketplaces),
+                max_workers=args.max_workers,
+                resume_from=args.resume_from,
+                skip_price=args.skip_price,
+                throttle_seconds=args.throttle_seconds,
+                progress_callback=progress_cb,
+                summarize_results=True,
+            )
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 1
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Unexpected error: %s", exc)
+        return 2
+    return 0
 
+
+@contextmanager
+def _tqdm_progress_callback() -> Iterator[Optional[Callable[[int, int, Optional[str]], None]]]:
+    try:
+        progress_bar = tqdm(total=0, desc="Processing EANs", unit="ean")
+    except Exception:  # pragma: no cover - tqdm not available or misconfigured
+        yield None
+        return
+
+    def _callback(processed: int, total: int, current_ean: Optional[str]) -> None:
+        if progress_bar.total != total:
+            progress_bar.total = total
+        progress_bar.n = processed
+        if current_ean:
+            progress_bar.set_postfix_str(current_ean)
+        progress_bar.refresh()
+
+    try:
+        yield _callback
+    finally:
+        progress_bar.close()
+
+
+def run_matcher(
+    *,
+    input_path: Path,
+    output_path: Path,
+    marketplaces: Sequence[str],
+    max_workers: int = 4,
+    resume_from: Optional[str] = None,
+    skip_price: bool = False,
+    throttle_seconds: float = 0.0,
+    progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
+    summarize_results: bool = False,
+) -> Tuple[List[str], List[LookupResult]]:
     rows = read_input_rows(input_path)
     if not rows:
         logger.warning("No EANs found in input file")
-        return 0
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_output(output_path, [])
+        if progress_callback:
+            progress_callback(0, 0, None)
+        return [], []
 
-    marketplaces = normalize_marketplaces(args.marketplaces)
-    if not marketplaces:
-        logger.error("No valid marketplaces provided")
-        return 1
+    normalized_marketplaces = [code for code in marketplaces if code]
+    if not normalized_marketplaces:
+        raise ValueError("No valid marketplaces provided")
 
     logger.info("Attempting to create SP-API client")
-    client = create_spapi_client(max_concurrency=max(args.max_workers, 1))
+    client = create_spapi_client(max_concurrency=max(max_workers, 1))
     if not client:
         logger.info("SP-API credentials not found. Falling back to PA-API client")
         client = create_paapi_client()
     if not client:
-        logger.error("No Amazon API credentials available. Aborting.")
-        return 2
+        raise ValueError("No Amazon API credentials available. Aborting.")
 
     seen: Dict[Tuple[str, str], Set[str]] = {}
     seen_lock = threading.Lock()
-
     results: List[LookupResult] = []
     processed_eans: List[str] = []
     total_eans = len(rows)
-    resume_from = args.resume_from.strip() if args.resume_from else None
-    resume_reached = resume_from is None
+    resume_value = resume_from.strip() if resume_from else None
+    resume_reached = resume_value is None
+    limiter = RateLimiter(throttle_seconds) if throttle_seconds > 0 else None
+    processed_count = 0
 
-    with ThreadPoolExecutor(max_workers=max(args.max_workers, 1)) as executor:
-        with tqdm(total=total_eans, desc="Processing EANs", unit="ean") as progress:
-            for row in rows:
-                ean_column = next((key for key in row.keys() if key.lower() == "ean"), None)
-                if not ean_column:
+    if progress_callback:
+        progress_callback(0, total_eans, None)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with ThreadPoolExecutor(max_workers=max(max_workers, 1)) as executor:
+        for row in rows:
+            ean_column = next((key for key in row.keys() if key.lower() == "ean"), None)
+            if not ean_column:
+                continue
+            ean = row[ean_column].strip()
+            if not ean:
+                continue
+            if not resume_reached:
+                if ean == resume_value:
+                    resume_reached = True
+                else:
+                    processed_count += 1
+                    if progress_callback:
+                        progress_callback(processed_count, total_eans, ean)
                     continue
-                ean = row[ean_column].strip()
-                if not ean:
+            input_brand = next((row.get(key) for key in row if key.lower() == "brand"), None)
+            future_to_marketplace = {
+                executor.submit(
+                    process_marketplace,
+                    ean,
+                    marketplace,
+                    input_brand,
+                    client,
+                    skip_price,
+                    seen,
+                    seen_lock,
+                    limiter,
+                ): marketplace
+                for marketplace in normalized_marketplaces
+            }
+            for future in as_completed(future_to_marketplace):
+                marketplace = future_to_marketplace[future]
+                try:
+                    marketplace_results = future.result()
+                except Exception as exc:  # pragma: no cover - runtime safety
+                    logger.error("Marketplace processing failed for %s/%s: %s", ean, marketplace, exc)
                     continue
-                if not resume_reached:
-                    if ean == resume_from:
-                        resume_reached = True
+                for result in marketplace_results:
+                    results.append(result)
+                    if result.pricing and result.pricing.currency:
+                        logger.info(
+                            "Currency for %s on %s: %s",
+                            result.item.asin,
+                            marketplace,
+                            result.pricing.currency,
+                        )
                     else:
-                        progress.update(1)
-                        continue
-                input_brand = next((row.get(key) for key in row if key.lower() == "brand"), None)
-                future_to_marketplace = {
-                    executor.submit(
-                        process_marketplace,
-                        ean,
-                        marketplace,
-                        input_brand,
-                        client,
-                        args.skip_price,
-                        seen,
-                        seen_lock,
-                    ): marketplace
-                    for marketplace in marketplaces
-                }
-                for future in as_completed(future_to_marketplace):
-                    marketplace = future_to_marketplace[future]
-                    try:
-                        marketplace_results = future.result()
-                    except Exception as exc:  # pragma: no cover - runtime safety
-                        logger.error("Marketplace processing failed for %s/%s: %s", ean, marketplace, exc)
-                        continue
-                    for result in marketplace_results:
-                        results.append(result)
-                        if result.pricing and result.pricing.currency:
-                            logger.info(
-                                "Currency for %s on %s: %s",
-                                result.item.asin,
-                                marketplace,
-                                result.pricing.currency,
-                            )
-                        else:
-                            logger.debug(
-                                "No pricing information for %s on %s", result.item.asin, marketplace
-                            )
-                progress.update(1)
-                processed_eans.append(ean)
+                        logger.debug(
+                            "No pricing information for %s on %s", result.item.asin, marketplace
+                        )
+            processed_eans.append(ean)
+            processed_count += 1
+            if progress_callback:
+                progress_callback(processed_count, total_eans, ean)
 
     write_output(output_path, results)
-    summarize(processed_eans, results)
-    return 0
+    if summarize_results:
+        summarize(processed_eans, results)
+    return processed_eans, results
 
 
 if __name__ == "__main__":
