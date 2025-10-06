@@ -83,7 +83,8 @@ python -m sdtmatchasin.cli --help
 python -m sdtmatchasin.cli match \
   --ean-file data/eans.csv \
   --output-file output/matches.csv \
-  --marketplace-id ATVPDKIKX0DER
+  --marketplace-id ATVPDKIKX0DER \
+  --throttle-seconds 0.5
 
 # Resume a previous batch with verbose logging
 LOG_LEVEL=DEBUG python -m sdtmatchasin.cli match --ean-file data/eans.csv --resume
@@ -95,7 +96,19 @@ Common commands include:
 - `audit`: Replays a subset of EANs and prints diagnostics for failed matches.
 - `cache clear`: Drops any cached responses before a fresh run.
 
-> The CLI uses [`tenacity`](https://tenacity.readthedocs.io/) for resilient retries and [`tqdm`](https://github.com/tqdm/tqdm) for progress visualization. See `python -m sdtmatchasin.cli --help` for the authoritative command list.
+> The CLI uses [`tenacity`](https://tenacity.readthedocs.io/) for resilient retries and [`tqdm`](https://github.com/tqdm/tqdm) for progress visualization. The `--throttle-seconds` flag enforces a minimum delay between Amazon API calls to help avoid throttling. See `python -m sdtmatchasin.cli --help` for the authoritative command list.
+
+### Web UI
+
+If you prefer a graphical workflow, the project ships with a lightweight Flask app that lets you upload CSV files, monitor progress, and download the enriched results.
+
+```bash
+pip install -r requirements.txt  # ensure Flask is available
+export FLASK_APP=webapp.py
+flask run --host 0.0.0.0 --port 5000
+```
+
+Open `http://<server>:5000` in your browser, upload the CSV containing an `ean` column, choose the marketplaces, and start the job. The interface displays live progress and exposes a download link once processing finishes.
 
 ---
 
