@@ -1,2 +1,13 @@
 __pycache__/
 *.py[cod]
+.env
+output/
+logs/
+.env
+.env.*
+.venv/
+data/
+output/
+logs/
+__pycache__/
+*.pyc
