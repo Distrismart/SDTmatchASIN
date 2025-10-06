@@ -251,7 +251,7 @@ def index():
 
 @app.route("/start", methods=["POST"])
 def start():
-    file = request.files.get("ean_file")
+    file = (request.files.get("ean_file") or request.files.get("file"))
     marketplaces = request.form.get("marketplaces", "")
     throttle_raw = request.form.get("throttle", "0.5")
     skip_price = request.form.get("skip_price") == "on"
