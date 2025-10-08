@@ -107,8 +107,12 @@ def main(in_csv: str, out_csv: str, marketplaces: List[str]) -> None:
             items = _resp_items(resp)
             if not items:
                 out_rows.append({
-                    "ean": ean, "marketplace": m.upper(), "asin": "",
-                    "title": "", "brand": "", "pack_size": "", "current_sales_price": ""
+                    "ean": ean,
+                    "marketplace": m.upper(),
+                    "asin": "",
+                    "title": "",
+                    "brand": "",
+                    "pack_size": "",
                 })
                 continue
 
@@ -122,12 +126,14 @@ def main(in_csv: str, out_csv: str, marketplaces: List[str]) -> None:
                     "title": title,
                     "brand": brand,
                     "pack_size": pack_size_from_title(title),
-                    "current_sales_price": "",  # pricing skipped in this quick runner
                 })
 
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     with open(out_csv, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["ean","marketplace","asin","title","brand","pack_size","current_sales_price"])
+        w = csv.DictWriter(
+            f,
+            fieldnames=["ean", "marketplace", "asin", "title", "brand", "pack_size"],
+        )
         w.writeheader(); w.writerows(out_rows)
     print(f"✅ Wrote {len(out_rows)} rows to {out_csv}")
 

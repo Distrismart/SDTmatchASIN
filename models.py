@@ -17,19 +17,9 @@ class CatalogItemSummary:
 
 
 @dataclass
-class PricingInfo:
-    """Container describing the pricing state of an ASIN."""
-
-    price: Optional[float]
-    currency: Optional[str]
-    source: str = ""
-
-
-@dataclass
 class LookupResult:
     """Result of an ASIN lookup for a specific EAN and marketplace."""
 
     ean: str
     marketplace: str
     item: CatalogItemSummary
-    pricing: Optional[PricingInfo]

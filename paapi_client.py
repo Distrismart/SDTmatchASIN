@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from tenacity import RetryError, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from models import CatalogItemSummary, PricingInfo
+from models import CatalogItemSummary
 
 try:  # pragma: no cover - optional dependency
     from paapi5_python_sdk.api.default_api import DefaultApi
@@ -185,12 +185,6 @@ class PAAPIClient:
                     )
                 )
         return summaries
-
-    def get_featured_offer_price(self, asin: str, marketplace: str) -> Optional[PricingInfo]:
-        # PA-API already returns offer listings in the lookup response; pricing can be pulled separately.
-        # Since PA-API does not support retrieving pricing without an item lookup, this method returns None.
-        return None
-
 
 def create_client(env_path: str | Path = ".env") -> Optional[PAAPIClient]:
     credentials = load_credentials(env_path)

@@ -96,9 +96,6 @@ INDEX_TEMPLATE = """
       <label>Throttle between API requests (seconds)
         <input type="number" name="throttle" value="0.5" step="0.1" min="0" max="5">
       </label>
-      <label>
-        <input type="checkbox" name="skip_price"> Skip featured offer price lookup
-      </label>
       <button type="submit">Start matching</button>
     </form>
     <div id="status" class="status hidden">
@@ -201,7 +198,7 @@ INDEX_TEMPLATE = """
 """
 
 
-def _run_job(job: JobState, input_path: Path, output_path: Path, marketplaces: str, throttle: float, skip_price: bool) -> None:
+def _run_job(job: JobState, input_path: Path, output_path: Path, marketplaces: str, throttle: float) -> None:
     normalized = normalize_marketplaces(marketplaces)
     if not normalized:
         with job.lock:
@@ -230,7 +227,6 @@ def _run_job(job: JobState, input_path: Path, output_path: Path, marketplaces: s
             output_path=output_path,
             marketplaces=normalized,
             throttle_seconds=throttle,
-            skip_price=skip_price,
             progress_callback=progress_callback,
         )
         with job.lock:
@@ -254,8 +250,6 @@ def start():
     file = (request.files.get("ean_file") or request.files.get("file"))
     marketplaces = request.form.get("marketplaces", "")
     throttle_raw = request.form.get("throttle", "0.5")
-    skip_price = request.form.get("skip_price") == "on"
-
     if not file or not file.filename:
         return jsonify({"success": False, "error": "Please upload a CSV file."})
 
@@ -275,7 +269,7 @@ def start():
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job, input_path, output_path, marketplaces, throttle, skip_price),
+        args=(job, input_path, output_path, marketplaces, throttle),
         daemon=True,
     )
     thread.start()
