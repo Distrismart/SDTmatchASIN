@@ -33,7 +33,36 @@ REQUIRED_ENV_VARS = {
     "SP_API_AWS_SECRET_KEY",
 }
 
-OPTIONAL_ENV_VARS = {"SP_API_ROLE_ARN", "SP_API_HOST"}
+OPTIONAL_ENV_VARS = {"SP_API_ROLE_ARN", "SP_API_HOST", "SP_API_AWS_SESSION_TOKEN"}
+
+_ENV_ALIASES = {
+    "SP_API_REFRESH_TOKEN": ("SP_API_REFRESH_TOKEN", "REFRESH_TOKEN", "SPAPI_REFRESH_TOKEN"),
+    "SP_API_LWA_APP_ID": ("SP_API_LWA_APP_ID", "LWA_APP_ID", "SPAPI_LWA_APP_ID"),
+    "SP_API_LWA_CLIENT_SECRET": (
+        "SP_API_LWA_CLIENT_SECRET",
+        "LWA_CLIENT_SECRET",
+        "SPAPI_LWA_CLIENT_SECRET",
+    ),
+    "SP_API_AWS_ACCESS_KEY": (
+        "SP_API_AWS_ACCESS_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_ACCESS_KEY",
+        "AMAZON_AWS_ACCESS_KEY",
+    ),
+    "SP_API_AWS_SECRET_KEY": (
+        "SP_API_AWS_SECRET_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SECRET_KEY",
+        "AMAZON_AWS_SECRET_KEY",
+    ),
+    "SP_API_AWS_SESSION_TOKEN": (
+        "SP_API_AWS_SESSION_TOKEN",
+        "AWS_SESSION_TOKEN",
+        "AMAZON_AWS_SESSION_TOKEN",
+    ),
+    "SP_API_ROLE_ARN": ("SP_API_ROLE_ARN", "AWS_ROLE_ARN", "AMAZON_ROLE_ARN"),
+    "SP_API_HOST": ("SP_API_HOST",),
+}
 
 _MARKETPLACE_ALIASES = {
     "UK": "GB",
@@ -47,6 +76,7 @@ class SPAPICredentials:
     lwa_client_secret: str
     aws_access_key: str
     aws_secret_key: str
+    aws_session_token: Optional[str] = None
     role_arn: Optional[str] = None
     host: Optional[str] = None
 
@@ -58,6 +88,8 @@ class SPAPICredentials:
             "aws_access_key": self.aws_access_key,
             "aws_secret_key": self.aws_secret_key,
         }
+        if self.aws_session_token:
+            data["aws_session_token"] = self.aws_session_token
         if self.role_arn:
             data["role_arn"] = self.role_arn
         if self.host:
@@ -84,19 +116,58 @@ def _load_dotenv(path: Path) -> Dict[str, str]:
     return env
 
 
+def _collect_env_values(source: Dict[str, str], destination: Dict[str, str]) -> None:
+    for canonical, aliases in _ENV_ALIASES.items():
+        if canonical in destination and destination[canonical]:
+            continue
+        for alias in aliases:
+            value = source.get(alias)
+            if value:
+                destination[canonical] = value
+                break
+
+
+def _load_boto_credentials() -> Dict[str, str]:
+    try:  # pragma: no cover - optional dependency
+        import boto3
+    except Exception:  # pragma: no cover - boto3 may not be installed
+        return {}
+
+    try:
+        session = boto3.Session()
+        credentials = session.get_credentials()
+        if not credentials:
+            return {}
+        frozen = credentials.get_frozen_credentials()
+        result: Dict[str, str] = {
+            "SP_API_AWS_ACCESS_KEY": frozen.access_key,
+            "SP_API_AWS_SECRET_KEY": frozen.secret_key,
+        }
+        if getattr(frozen, "token", None):
+            result["SP_API_AWS_SESSION_TOKEN"] = frozen.token  # type: ignore[assignment]
+        return result
+    except Exception:  # pragma: no cover - boto3 internal errors
+        return {}
+
+
 def load_credentials(env_path: str | Path = ".env") -> Optional[SPAPICredentials]:
     env: Dict[str, str] = {}
-    env.update({key: os.environ.get(key, "") for key in REQUIRED_ENV_VARS | OPTIONAL_ENV_VARS})
+    _collect_env_values(dict(os.environ), env)
 
     missing = {key for key in REQUIRED_ENV_VARS if not env.get(key)}
     if missing:
         dotenv_values = _load_dotenv(Path(env_path))
-        for key in REQUIRED_ENV_VARS | OPTIONAL_ENV_VARS:
-            if not env.get(key) and key in dotenv_values:
-                env[key] = dotenv_values[key]
+        _collect_env_values(dotenv_values, env)
         missing = {key for key in REQUIRED_ENV_VARS if not env.get(key)}
-        if missing:
-            return None
+
+    if {"SP_API_AWS_ACCESS_KEY", "SP_API_AWS_SECRET_KEY"} & missing:
+        boto_env = _load_boto_credentials()
+        if boto_env:
+            env.update({key: value for key, value in boto_env.items() if value})
+        missing = {key for key in REQUIRED_ENV_VARS if not env.get(key)}
+
+    if missing:
+        return None
 
     return SPAPICredentials(
         refresh_token=env["SP_API_REFRESH_TOKEN"],
@@ -104,6 +175,7 @@ def load_credentials(env_path: str | Path = ".env") -> Optional[SPAPICredentials
         lwa_client_secret=env["SP_API_LWA_CLIENT_SECRET"],
         aws_access_key=env["SP_API_AWS_ACCESS_KEY"],
         aws_secret_key=env["SP_API_AWS_SECRET_KEY"],
+        aws_session_token=env.get("SP_API_AWS_SESSION_TOKEN") or None,
         role_arn=env.get("SP_API_ROLE_ARN") or None,
         host=env.get("SP_API_HOST") or None,
     )
