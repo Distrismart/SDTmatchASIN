@@ -10,14 +10,13 @@ from typing import Any, Dict, List, Optional
 
 from tenacity import RetryError, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from models import CatalogItemSummary, PricingInfo
+from models import CatalogItemSummary
 
 try:
-    from spapi_compat import CatalogItems, ProductPricing
+    from spapi_compat import CatalogItems
     from sp_api.base import Marketplaces, SellingApiException
 except ImportError as exc:  # pragma: no cover - optional dependency
     CatalogItems = None  # type: ignore
-    ProductPricing = None  # type: ignore
     Marketplaces = None  # type: ignore
     SellingApiException = Exception
     logging.getLogger(__name__).warning(
@@ -119,14 +118,13 @@ class SPAPIClient:
         *,
         max_concurrency: int = 5,
     ) -> None:
-        if CatalogItems is None or ProductPricing is None or Marketplaces is None:
+        if CatalogItems is None or Marketplaces is None:
             raise MissingCredentialsError(
                 "python-sp-api is not available. Install python-sp-api to use SPAPIClient."
             )
 
         self.credentials = credentials
         self._catalog_clients: Dict[str, CatalogItems] = {}
-        self._pricing_clients: Dict[str, ProductPricing] = {}
         self._lock = threading.Lock()
         self._semaphore = threading.BoundedSemaphore(max_concurrency)
 
@@ -148,18 +146,6 @@ class SPAPIClient:
                     credentials=credentials_dict,
                 )
                 self._catalog_clients[marketplace_code] = client
-        return client
-
-    def _get_pricing_client(self, marketplace_code: str) -> ProductPricing:
-        with self._lock:
-            client = self._pricing_clients.get(marketplace_code)
-            if client is None:
-                credentials_dict = self.credentials.to_dict()
-                client = ProductPricing(
-                    marketplace=self._get_marketplace(marketplace_code),
-                    credentials=credentials_dict,
-                )
-                self._pricing_clients[marketplace_code] = client
         return client
 
     # endregion
@@ -271,72 +257,6 @@ class SPAPIClient:
                 )
             )
         return summaries
-
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
-        retry=retry_if_exception_type(SellingApiException),
-    )
-    def _get_item_offers(
-        self,
-        client: ProductPricing,
-        marketplace: str,
-        asin: str,
-    ) -> Dict[str, Any]:
-        marketplace_id = self._get_marketplace(marketplace).marketplace_id
-        return client.get_item_offers(
-            asin=asin,
-            marketplaceId=marketplace_id,
-            itemCondition="New",
-        ).payload
-
-    def get_featured_offer_price(self, asin: str, marketplace: str) -> Optional[PricingInfo]:
-        client = self._get_pricing_client(marketplace)
-        try:
-            with self._semaphore:
-                payload = self._get_item_offers(client, marketplace, asin)
-        except RetryError as exc:
-            logging.getLogger(__name__).warning(
-                "Failed to obtain pricing for %s on %s: %s", asin, marketplace, exc
-            )
-            return None
-        except SellingApiException as exc:  # pragma: no cover
-            logging.getLogger(__name__).warning(
-                "SP-API pricing error for %s on %s: %s", asin, marketplace, exc
-            )
-            return None
-
-        offers = payload.get("Offers") or payload.get("offers") or []
-        if not offers:
-            return None
-
-        def parse_price(offer: Dict[str, Any]) -> Optional[PricingInfo]:
-            price_info = offer.get("ListingPrice") or offer.get("listingPrice") or {}
-            amount = price_info.get("Amount") or price_info.get("amount")
-            currency = price_info.get("CurrencyCode") or price_info.get("currencyCode")
-            if amount is None or currency is None:
-                return None
-            try:
-                amount_value = float(amount)
-            except (TypeError, ValueError):
-                return None
-            return PricingInfo(price=amount_value, currency=str(currency), source=offer.get("offerType", ""))
-
-        featured_offer = next(
-            (offer for offer in offers if offer.get("OfferType") == "Featured" or offer.get("offerType") == "Featured"),
-            None,
-        )
-        if featured_offer:
-            parsed = parse_price(featured_offer)
-            if parsed:
-                return parsed
-
-        for offer in offers:
-            parsed = parse_price(offer)
-            if parsed:
-                return parsed
-        return None
 
 
 def create_client(env_path: str | Path = ".env", max_concurrency: int = 5) -> Optional[SPAPIClient]:

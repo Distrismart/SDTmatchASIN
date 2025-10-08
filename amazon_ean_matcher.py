@@ -14,7 +14,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 
 from tqdm import tqdm
 
-from models import CatalogItemSummary, LookupResult, PricingInfo
+from models import CatalogItemSummary, LookupResult
 from pack_size import extract_pack_size
 from paapi_client import create_client as create_paapi_client
 from spapi_client import create_client as create_spapi_client
@@ -33,7 +33,6 @@ OUTPUT_COLUMNS = [
     "title",
     "brand",
     "pack_size",
-    "current_sales_price",
 ]
 
 
@@ -61,11 +60,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--resume-from",
         help="Resume processing starting from the provided EAN value",
-    )
-    parser.add_argument(
-        "--skip-price",
-        action="store_true",
-        help="Skip fetching featured offer pricing",
     )
     parser.add_argument(
         "--throttle-seconds",
@@ -134,9 +128,8 @@ def make_lookup_result(
     ean: str,
     marketplace: str,
     item: CatalogItemSummary,
-    pricing: Optional[PricingInfo],
 ) -> LookupResult:
-    return LookupResult(ean=ean, marketplace=marketplace, item=item, pricing=pricing)
+    return LookupResult(ean=ean, marketplace=marketplace, item=item)
 
 
 class RateLimiter:
@@ -164,7 +157,6 @@ def process_marketplace(
     marketplace: str,
     input_brand: Optional[str],
     client,
-    skip_price: bool,
     seen: Dict[Tuple[str, str], Set[str]],
     seen_lock: threading.Lock,
     rate_limiter: Optional[RateLimiter] = None,
@@ -193,26 +185,7 @@ def process_marketplace(
         if not brand_matches(input_brand, item.brand):
             logger.debug("Skipping ASIN %s on %s due to brand mismatch (%s vs %s)", asin, marketplace, input_brand, item.brand)
             continue
-        pricing = None
-        if not skip_price:
-            try:
-                if rate_limiter:
-                    rate_limiter.wait()
-                pricing = client.get_featured_offer_price(asin, marketplace)
-            except Exception as exc:  # pragma: no cover - network safeguard
-                logger.warning("Failed to fetch pricing for %s on %s: %s", asin, marketplace, exc)
-                pricing = None
-            else:
-                if pricing and pricing.currency:
-                    logger.debug(
-                        "Pricing for %s on %s: %s %s (source=%s)",
-                        asin,
-                        marketplace,
-                        pricing.currency,
-                        pricing.price,
-                        pricing.source,
-                    )
-        results.append(make_lookup_result(ean, marketplace, item, pricing))
+        results.append(make_lookup_result(ean, marketplace, item))
     return results
 
 
@@ -221,9 +194,6 @@ def write_output(path: Path, results: Iterable[LookupResult]) -> None:
         writer = csv.DictWriter(fh, fieldnames=OUTPUT_COLUMNS)
         writer.writeheader()
         for result in results:
-            price_value = ""
-            if result.pricing and result.pricing.price is not None:
-                price_value = f"{result.pricing.price:.2f}"
             pack_size_value = extract_pack_size(
                 result.item.attributes,
                 title=result.item.title,
@@ -238,7 +208,6 @@ def write_output(path: Path, results: Iterable[LookupResult]) -> None:
                     "title": result.item.title or "",
                     "brand": result.item.brand or "",
                     "pack_size": str(pack_size_value) if pack_size_value is not None else "",
-                    "current_sales_price": price_value,
                 }
             )
 
@@ -273,7 +242,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 marketplaces=normalize_marketplaces(args.marketplaces),
                 max_workers=args.max_workers,
                 resume_from=args.resume_from,
-                skip_price=args.skip_price,
                 throttle_seconds=args.throttle_seconds,
                 progress_callback=progress_cb,
                 summarize_results=True,
@@ -319,7 +287,6 @@ def run_matcher(
     marketplaces: Sequence[str],
     max_workers: int = 4,
     resume_from: Optional[str] = None,
-    skip_price: bool = False,
     throttle_seconds: float = 0.0,
     progress_callback: Optional[Callable[[int, int, Optional[str]], None]] = None,
     summarize_results: bool = False,
@@ -384,7 +351,6 @@ def run_matcher(
                     marketplace,
                     input_brand,
                     client,
-                    skip_price,
                     seen,
                     seen_lock,
                     limiter,
@@ -400,17 +366,6 @@ def run_matcher(
                     continue
                 for result in marketplace_results:
                     results.append(result)
-                    if result.pricing and result.pricing.currency:
-                        logger.info(
-                            "Currency for %s on %s: %s",
-                            result.item.asin,
-                            marketplace,
-                            result.pricing.currency,
-                        )
-                    else:
-                        logger.debug(
-                            "No pricing information for %s on %s", result.item.asin, marketplace
-                        )
             processed_eans.append(ean)
             processed_count += 1
             if progress_callback:
