@@ -37,6 +37,24 @@ REQUIRED_ENV_VARS = {
 
 OPTIONAL_ENV_VARS = {"PAAPI_HOST"}
 
+_ENV_ALIASES = {
+    "PAAPI_ACCESS_KEY": (
+        "PAAPI_ACCESS_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_ACCESS_KEY",
+        "AMAZON_PAAPI_ACCESS_KEY",
+    ),
+    "PAAPI_SECRET_KEY": (
+        "PAAPI_SECRET_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SECRET_KEY",
+        "AMAZON_PAAPI_SECRET_KEY",
+    ),
+    "PAAPI_PARTNER_TAG": ("PAAPI_PARTNER_TAG", "AMAZON_PAAPI_PARTNER_TAG"),
+    "PAAPI_REGION": ("PAAPI_REGION", "AMAZON_PAAPI_REGION"),
+    "PAAPI_HOST": ("PAAPI_HOST", "AMAZON_PAAPI_HOST"),
+}
+
 
 @dataclass
 class PAAPICredentials:
@@ -64,15 +82,24 @@ def _load_dotenv(path: Path) -> Dict[str, str]:
     return env
 
 
+def _collect_env_values(source: Dict[str, str], destination: Dict[str, str]) -> None:
+    for canonical, aliases in _ENV_ALIASES.items():
+        if destination.get(canonical):
+            continue
+        for alias in aliases:
+            value = source.get(alias)
+            if value:
+                destination[canonical] = value
+                break
+
+
 def load_credentials(env_path: str | Path = ".env") -> Optional[PAAPICredentials]:
     env: Dict[str, str] = {}
-    env.update({key: os.environ.get(key, "") for key in REQUIRED_ENV_VARS | OPTIONAL_ENV_VARS})
+    _collect_env_values(dict(os.environ), env)
     missing = {key for key in REQUIRED_ENV_VARS if not env.get(key)}
     if missing:
         dotenv_values = _load_dotenv(Path(env_path))
-        for key in REQUIRED_ENV_VARS | OPTIONAL_ENV_VARS:
-            if not env.get(key) and key in dotenv_values:
-                env[key] = dotenv_values[key]
+        _collect_env_values(dotenv_values, env)
         missing = {key for key in REQUIRED_ENV_VARS if not env.get(key)}
         if missing:
             return None
