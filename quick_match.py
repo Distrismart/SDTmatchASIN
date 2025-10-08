@@ -1,5 +1,5 @@
 import os, csv, sys, re
-from typing import Iterable, List, Dict, Any
+from typing import Iterable, List, Dict, Any, Optional
 from sp_api.base import Marketplaces
 from spapi_compat import CatalogItems   # our shim
 
@@ -13,7 +13,24 @@ def creds() -> dict:
         "role_arn": os.getenv("SP_API_ROLE_ARN") or os.getenv("ROLE_ARN"),
     }
 
-MP = {"de": Marketplaces.DE, "fr": Marketplaces.FR}
+MP_MAP = {
+    "de": Marketplaces.DE,
+    "fr": Marketplaces.FR,
+    "it": Marketplaces.IT,
+    "es": Marketplaces.ES,
+    "nl": Marketplaces.NL,
+    "se": Marketplaces.SE,
+    "pl": Marketplaces.PL,
+    "uk": Marketplaces.GB,
+    "gb": Marketplaces.GB,
+}
+
+
+def make_client(code: str, credentials: Dict[str, Any]) -> CatalogItems:
+    mp = MP_MAP.get(code.lower())
+    if not mp:
+        raise ValueError(f"Unsupported marketplace code: {code}")
+    return CatalogItems(marketplace=mp, credentials=credentials)
 
 def pack_size_from_title(title: str) -> str:
     if not title: return ""
@@ -61,16 +78,53 @@ def _title_brand_from_item(it: Dict[str, Any]) -> (str, str):
         brand = raw_brand[0] if isinstance(raw_brand, list) else raw_brand or ""
     return title, brand
 
+def _coerce_pack_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            result = _coerce_pack_value(item)
+            if result:
+                return result
+        return None
+    if isinstance(value, dict):
+        for key in ("value", "Value", "values", "Values"):
+            if key in value:
+                result = _coerce_pack_value(value.get(key))
+                if result:
+                    return result
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _pack_size_from_item(item: Dict[str, Any], title: str) -> str:
+    summary_list = item.get("summaries") or []
+    summary = summary_list[0] if summary_list else {}
+    attrs = item.get("attributes") or {}
+
+    for container in (summary, attrs):
+        if not isinstance(container, dict):
+            continue
+        for key in (
+            "itemPackageQuantity",
+            "numberOfItems",
+            "itempackagequantity",
+            "numberofitems",
+        ):
+            if key in container:
+                value = _coerce_pack_value(container.get(key))
+                if value:
+                    return value
+
+    return pack_size_from_title(title)
+
+
 def main(in_csv: str, out_csv: str, marketplaces: List[str]) -> None:
     out_rows: List[Dict[str, Any]] = []
     c = creds()
     for m in marketplaces:
-        mp = MP[m]
-        kwargs = {"credentials": c, "marketplace": mp}
-        region = getattr(mp, "region", None)
-        if region:
-            kwargs["region"] = region
-        cat = CatalogItems(**kwargs)
+        cat = make_client(m, c)
         for ean in read_eans(in_csv):
             # Call signature (robust across library versions):
             # We try multiple variants in order. On QuotaExceeded we back off and retry.
@@ -123,13 +177,14 @@ def main(in_csv: str, out_csv: str, marketplaces: List[str]) -> None:
             for it in items:
                 asin = (it.get("asin") or "").strip()
                 title, brand = _title_brand_from_item(it)
+                pack_size = _pack_size_from_item(it, title)
                 out_rows.append({
                     "ean": ean,
                     "marketplace": m.upper(),
                     "asin": asin,
                     "title": title,
                     "brand": brand,
-                    "pack_size": pack_size_from_title(title),
+                    "pack_size": pack_size,
                 })
 
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
