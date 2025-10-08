@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -24,8 +25,10 @@ app = Flask(__name__)
 
 UPLOAD_DIR = Path("uploads")
 RESULT_DIR = Path("results")
+JOB_STATE_DIR = Path("job_state")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
+JOB_STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -41,9 +44,36 @@ class JobState:
     error: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    def storage_path(self) -> Path:
+        return JOB_STATE_DIR / f"{self.job_id}.json"
+
+    def _serializable_dict(self) -> Dict[str, Optional[str]]:
+        return {
+            "job_id": self.job_id,
+            "filename": self.filename,
+            "marketplaces": self.marketplaces,
+            "status": self.status,
+            "message": self.message,
+            "processed": self.processed,
+            "total": self.total,
+            "output_path": str(self.output_path) if self.output_path else None,
+            "error": self.error,
+        }
+
+    def _save_unlocked(self) -> None:
+        payload = json.dumps(self._serializable_dict(), ensure_ascii=False, indent=2)
+        storage_path = self.storage_path()
+        tmp_path = storage_path.parent / f"{storage_path.name}.tmp"
+        tmp_path.write_text(payload, encoding="utf-8")
+        tmp_path.replace(storage_path)
+
+    def save(self) -> None:
+        with self.lock:
+            self._save_unlocked()
+
     def to_dict(self) -> Dict[str, Optional[str]]:
         with self.lock:
-            return {
+            data = {
                 "job_id": self.job_id,
                 "filename": self.filename,
                 "marketplaces": self.marketplaces,
@@ -54,6 +84,29 @@ class JobState:
                 "download_url": url_for("download", job_id=self.job_id) if self.output_path and self.status == "finished" else None,
                 "error": self.error,
             }
+        return data
+
+    @classmethod
+    def load(cls, job_id: str) -> Optional["JobState"]:
+        path = JOB_STATE_DIR / f"{job_id}.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        output_path = Path(data["output_path"]) if data.get("output_path") else None
+        return cls(
+            job_id=data.get("job_id", job_id),
+            filename=data.get("filename", ""),
+            marketplaces=data.get("marketplaces", ""),
+            status=data.get("status", "queued"),
+            message=data.get("message", ""),
+            processed=int(data.get("processed", 0) or 0),
+            total=int(data.get("total", 0) or 0),
+            output_path=output_path,
+            error=data.get("error"),
+        )
 
 
 jobs: Dict[str, JobState] = {}
@@ -205,6 +258,7 @@ def _run_job(job: JobState, input_path: Path, output_path: Path, marketplaces: s
             job.status = "error"
             job.message = "No valid marketplaces provided."
             job.error = job.message
+            job._save_unlocked()
         return
 
     def progress_callback(processed: int, total: int, current_ean: Optional[str]) -> None:
@@ -218,10 +272,12 @@ def _run_job(job: JobState, input_path: Path, output_path: Path, marketplaces: s
                     job.message = f"Processing {current_ean}"
                 else:
                     job.message = "Processing EANs"
+            job._save_unlocked()
 
     try:
         with job.lock:
             job.status = "running"
+            job._save_unlocked()
         processed, _ = run_matcher(
             input_path=input_path,
             output_path=output_path,
@@ -233,11 +289,13 @@ def _run_job(job: JobState, input_path: Path, output_path: Path, marketplaces: s
             job.status = "finished"
             job.message = f"Completed {len(processed)} EANs."
             job.output_path = output_path
+            job._save_unlocked()
     except Exception as exc:  # pragma: no cover - runtime safeguard
         with job.lock:
             job.status = "error"
             job.message = "Matching failed."
             job.error = str(exc)
+            job._save_unlocked()
 
 
 @app.route("/", methods=["GET"])
@@ -266,6 +324,7 @@ def start():
 
     job = JobState(job_id=job_id, filename=safe_name, marketplaces=marketplaces, message="Queued")
     jobs[job_id] = job
+    job.save()
 
     thread = threading.Thread(
         target=_run_job,
@@ -281,6 +340,10 @@ def start():
 def progress(job_id: str):
     job = jobs.get(job_id)
     if not job:
+        job = JobState.load(job_id)
+        if job:
+            jobs[job_id] = job
+    if not job:
         return jsonify({"success": False, "error": "Job not found."})
     return jsonify({"success": True, **job.to_dict()})
 
@@ -288,6 +351,10 @@ def progress(job_id: str):
 @app.route("/download/<job_id>")
 def download(job_id: str):
     job = jobs.get(job_id)
+    if not job:
+        job = JobState.load(job_id)
+        if job:
+            jobs[job_id] = job
     if not job or job.status != "finished" or not job.output_path:
         return redirect(url_for("index"))
     return send_file(job.output_path, as_attachment=True, download_name=f"{job.filename.rsplit('.', 1)[0]}_matches.csv")
