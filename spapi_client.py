@@ -213,10 +213,15 @@ class SPAPIClient:
             client = self._catalog_clients.get(marketplace_code)
             if client is None:
                 credentials_dict = self.credentials.to_dict()
-                client = CatalogItems(
-                    marketplace=self._get_marketplace(marketplace_code),
-                    credentials=credentials_dict,
-                )
+                marketplace = self._get_marketplace(marketplace_code)
+                client_kwargs = {
+                    "marketplace": marketplace,
+                    "credentials": credentials_dict,
+                }
+                marketplace_region = getattr(marketplace, "region", None)
+                if marketplace_region:
+                    client_kwargs["region"] = marketplace_region
+                client = CatalogItems(**client_kwargs)
                 self._catalog_clients[marketplace_code] = client
         return client
 
