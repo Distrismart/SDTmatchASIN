@@ -4,14 +4,14 @@ from typing import Dict, List, Optional
 from sp_api.base import Marketplaces
 from sp_api.base.client import Client
 
-# Map short codes you use in the UI to SP-API marketplace ids
+# Map short codes you use in the UI to SP-API marketplace objects
 
 MP = {
-    "de": Marketplaces.DE.marketplace_id,
-    "fr": Marketplaces.FR.marketplace_id,
-    "it": Marketplaces.IT.marketplace_id,
-    "es": Marketplaces.ES.marketplace_id,
-    "uk": Marketplaces.GB.marketplace_id,
+    "de": Marketplaces.DE,
+    "fr": Marketplaces.FR,
+    "it": Marketplaces.IT,
+    "es": Marketplaces.ES,
+    "uk": Marketplaces.GB,
 }
 
 def _lowest_landed_price(offers: list) -> Optional[float]:
@@ -43,8 +43,13 @@ def get_item_offers_batch(
     if marketplace not in MP:
         raise ValueError(f"Unknown marketplace code: {marketplace}")
 
-    mkt_id = MP[marketplace]
-    client = Client()  # picks up your env/.env via python-amazon-sp-api
+    marketplace_info = MP[marketplace]
+    mkt_id = marketplace_info.marketplace_id
+    client_kwargs = {"marketplace": marketplace_info}
+    region = getattr(marketplace_info, "region", None)
+    if region:
+        client_kwargs["region"] = region
+    client = Client(**client_kwargs)  # picks up your env/.env via python-amazon-sp-api
 
     prices: Dict[str, float] = {}
     BATCH_LIMIT = 20

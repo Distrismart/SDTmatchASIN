@@ -66,7 +66,11 @@ def main(in_csv: str, out_csv: str, marketplaces: List[str]) -> None:
     c = creds()
     for m in marketplaces:
         mp = MP[m]
-        cat = CatalogItems(credentials=c, marketplace=mp)
+        kwargs = {"credentials": c, "marketplace": mp}
+        region = getattr(mp, "region", None)
+        if region:
+            kwargs["region"] = region
+        cat = CatalogItems(**kwargs)
         for ean in read_eans(in_csv):
             # Call signature (robust across library versions):
             # We try multiple variants in order. On QuotaExceeded we back off and retry.
