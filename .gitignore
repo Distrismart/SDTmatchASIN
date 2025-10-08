@@ -9,5 +9,6 @@ logs/
 data/
 output/
 logs/
+job_state/
 __pycache__/
 *.pyc
