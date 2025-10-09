@@ -10,7 +10,19 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from contextlib import contextmanager
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 from tqdm import tqdm
 
@@ -33,7 +45,88 @@ OUTPUT_COLUMNS = [
     "title",
     "brand",
     "pack_size",
+    "color",
+    "size",
+    "number_of_items",
 ]
+
+COLOR_ATTRIBUTE_KEYS = (
+    "color",
+    "color_name",
+    "colorname",
+    "colorfamily",
+)
+
+SIZE_ATTRIBUTE_KEYS = (
+    "size",
+    "size_name",
+    "sizename",
+)
+
+NUMBER_OF_ITEMS_KEYS = (
+    "number_of_items",
+    "numberofitems",
+    "itempackagequantity",
+    "item_package_quantity",
+    "itemPackageQuantity",
+    "numberOfItems",
+    "unitcount",
+    "unitCount",
+    "packagequantity",
+    "packageQuantity",
+)
+
+
+def extract_attribute_value(
+    attributes: Optional[Mapping[str, Any]],
+    candidate_keys: Sequence[str],
+) -> Optional[str]:
+    if not attributes:
+        return None
+
+    normalized_keys = {key.lower() for key in candidate_keys}
+
+    def _walk(data: Any) -> Iterator[Tuple[Optional[str], Any]]:
+        if isinstance(data, Mapping):
+            for key, value in data.items():
+                yield key if isinstance(key, str) else None, value
+                yield from _walk(value)
+        elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+            for value in data:
+                yield from _walk(value)
+
+    def _coerce(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            for candidate in (
+                "display_value",
+                "displayValue",
+                "value",
+                "Values",
+                "values",
+                "Value",
+            ):
+                if candidate in value:
+                    coerced = _coerce(value[candidate])
+                    if coerced:
+                        return coerced
+            return None
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            for item in value:
+                coerced = _coerce(item)
+                if coerced:
+                    return coerced
+            return None
+        text = str(value).strip()
+        return text or None
+
+    for key, value in _walk(attributes):
+        if key and key.lower() in normalized_keys:
+            coerced = _coerce(value)
+            if coerced:
+                return coerced
+    return None
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -200,6 +293,11 @@ def write_output(path: Path, results: Iterable[LookupResult]) -> None:
                 bullet_points=result.item.bullet_points,
                 locale=result.marketplace,
             )
+            color_value = extract_attribute_value(result.item.attributes, COLOR_ATTRIBUTE_KEYS)
+            size_value = extract_attribute_value(result.item.attributes, SIZE_ATTRIBUTE_KEYS)
+            number_of_items_value = extract_attribute_value(
+                result.item.attributes, NUMBER_OF_ITEMS_KEYS
+            )
             writer.writerow(
                 {
                     "ean": result.ean,
@@ -208,6 +306,9 @@ def write_output(path: Path, results: Iterable[LookupResult]) -> None:
                     "title": result.item.title or "",
                     "brand": result.item.brand or "",
                     "pack_size": str(pack_size_value) if pack_size_value is not None else "",
+                    "color": color_value or "",
+                    "size": size_value or "",
+                    "number_of_items": number_of_items_value or "",
                 }
             )
 
