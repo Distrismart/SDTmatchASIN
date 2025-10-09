@@ -268,11 +268,26 @@ class SPAPIClient:
         marketplace: str,
         ean: str,
     ) -> Dict[str, Any]:
+        marketplace_id = self._get_marketplace(marketplace).marketplace_id
+        try:
+            return client.search_catalog_items(
+                identifiers=[ean],
+                identifiersType="EAN",
+                marketplaceIds=[marketplace_id],
+                includedData=["summaries", "identifiers", "attributes"],
+            ).payload
+        except SellingApiException as exc:
+            message = str(exc)
+            if "includeDataBeta" not in message and "InvalidInput" not in message:
+                raise
+
+        # Some SP-API deployments reject the includedData argument with the
+        # message "Invalid includeDataBeta requested". Retry without the
+        # optional parameter so that we still get at least the default payload.
         return client.search_catalog_items(
             identifiers=[ean],
             identifiersType="EAN",
-            marketplaceIds=[self._get_marketplace(marketplace).marketplace_id],
-            includedData=["summaries", "identifiers", "attributes"],
+            marketplaceIds=[marketplace_id],
         ).payload
 
     def lookup_ean(self, ean: str, marketplace: str) -> List[CatalogItemSummary]:
