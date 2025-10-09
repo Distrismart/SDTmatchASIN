@@ -269,28 +269,17 @@ class SPAPIClient:
         ean: str,
     ) -> Dict[str, Any]:
         marketplace_id = self._get_marketplace(marketplace).marketplace_id
+        ean_value = str(ean).strip()
+        if not ean_value:
+            return {}
+
         variants = [
             {
-                "identifiers": [ean],
-                "identifiersType": "EAN",
-                "includedData": ["summaries", "identifiers", "attributes"],
-            },
-            {
-                "identifiers": ean,
-                "identifiersType": "EAN",
-                "includedData": ["summaries", "identifiers", "attributes"],
-            },
-            {
-                "identifiers": [ean],
+                "identifiers": [ean_value],
                 "identifiersType": "EAN",
             },
-            {
-                "identifiers": ean,
-                "identifiersType": "EAN",
-            },
-            {"keywords": [ean]},
-            {"keywords": ean},
-            {"query": ean},
+            {"keywords": [ean_value]},
+            {"query": ean_value},
         ]
 
         last_exc: Optional[SellingApiException] = None
