@@ -269,26 +269,56 @@ class SPAPIClient:
         ean: str,
     ) -> Dict[str, Any]:
         marketplace_id = self._get_marketplace(marketplace).marketplace_id
-        try:
-            return client.search_catalog_items(
-                identifiers=[ean],
-                identifiersType="EAN",
-                marketplaceIds=[marketplace_id],
-                includedData=["summaries", "identifiers", "attributes"],
-            ).payload
-        except SellingApiException as exc:
-            message = str(exc)
-            if "includeDataBeta" not in message and "InvalidInput" not in message:
+        variants = [
+            {
+                "identifiers": [ean],
+                "identifiersType": "EAN",
+                "includedData": ["summaries", "identifiers", "attributes"],
+            },
+            {
+                "identifiers": ean,
+                "identifiersType": "EAN",
+                "includedData": ["summaries", "identifiers", "attributes"],
+            },
+            {
+                "identifiers": [ean],
+                "identifiersType": "EAN",
+            },
+            {
+                "identifiers": ean,
+                "identifiersType": "EAN",
+            },
+            {"keywords": [ean]},
+            {"keywords": ean},
+            {"query": ean},
+        ]
+
+        last_exc: Optional[SellingApiException] = None
+        for params in variants:
+            kwargs = dict(params)
+            kwargs["marketplaceIds"] = [marketplace_id]
+            try:
+                return client.search_catalog_items(**kwargs).payload
+            except SellingApiException as exc:
+                message = str(exc)
+                if any(
+                    marker in message
+                    for marker in (
+                        "InvalidInput",
+                        "Invalid includeData",
+                        "Invalid includeDataBeta",
+                        "Missing required 'identifiers' or 'keywords'",
+                    )
+                ):
+                    last_exc = exc
+                    continue
                 raise
 
-        # Some SP-API deployments reject the includedData argument with the
-        # message "Invalid includeDataBeta requested". Retry without the
-        # optional parameter so that we still get at least the default payload.
-        return client.search_catalog_items(
-            identifiers=[ean],
-            identifiersType="EAN",
-            marketplaceIds=[marketplace_id],
-        ).payload
+        if last_exc is not None:
+            raise last_exc
+
+        # Should not be reachable, but return empty payload for safety.
+        return {}
 
     def lookup_ean(self, ean: str, marketplace: str) -> List[CatalogItemSummary]:
         client = self._get_catalog_client(marketplace)
